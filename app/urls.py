@@ -14,5 +14,9 @@ urlpatterns = [
     path('toggle_fav_product_status/', views.toggle_fav_product_status,
          name='toggle_fav_product_status'),
     path('cart/', views.cart, name='cart'), # 追加      
+    path('change_item_amount/', views.change_item_amount, name='change_item_amount'), # 追加
+    path('order_history/', views.order_history, name='order_history'),
+
+
 ]
 

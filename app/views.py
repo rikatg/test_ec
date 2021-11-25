@@ -7,6 +7,10 @@ from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_POST
 from django.contrib import messages # 追加 
 from .forms import AddToCartForm # 追加
+import json # 追加 
+import requests # 追加
+from .models import Sale # 追加
+from .forms import PurchaseForm # 追加
 
 
 
@@ -74,8 +78,9 @@ def fav_products(request):
     return render(request, 'app/index.html', {'products': products})
 
 
-@login_required 
+@login_required
 def cart(request):
+    user = request.user
     cart = request.session.get('cart', {})
     cart_products = dict()
     total_price = 0
@@ -83,9 +88,86 @@ def cart(request):
        product = Product.objects.get(id=product_id)
        cart_products[product] = num
        total_price += product.price * num
+    
+    purchase_form = PurchaseForm(request.POST or None)
+    if purchase_form.is_valid():
+      # 住所検索ボタンが押された場合
+      if 'search_address' in request.POST:
+        zip_code = request.POST['zip_code']
+        address = get_address(zip_code)
+        # 住所が取得できなかった場合はメッセージを出してリダイレクト
+        if not address:
+          messages.warning(request, "住所を取得できませんでした。")
+          return redirect('app:cart')
+        # 住所が取得できたらフォームに入力してあげる
+        purchase_form = PurchaseForm(initial={'zip_code': zip_code,'address': address})
+      
+      # 購入ボタンが押された場合
+      if 'buy_product' in request.POST:
+        # 住所が入力済みか確認する
+        if not purchase_form.cleaned_data['address']:
+          messages.warning(request, "住所の入力は必須です")
+          return redirect('app:cart')
+        # カートが空じゃないか確認
+        if not bool(cart):
+          messages.warning(request, "カートは空です")
+          return redirect('app:cart')
+        # 所持ポイントが十分にあるか確認
+        if total_price > user.point:
+          messages.warning(request, "所持ポイントが足りません")
+          return redirect('app:cart')
+
+        # 各プロダクトの Sale 情報を保存
+        for product_id, num in cart.items():
+          if not Product.objects.filter(pk=product_id).exists():
+            del cart[product_id]
+          product = Product.objects.get(pk=product_id)
+          sale = Sale(product=product, user=request.user,amount=num, price=product.price, total_price=num*product.price)
+          sale.save()
+        # ポイントを削減
+        user.point -= total_price
+        user.save()
+        del request.session['cart']
+        messages.success(request, "商品の購入が完了しました!")
+        return redirect('app:cart')
+    
     context = {
-       'cart_products': cart_products,
-       'total_price': total_price,
+      'purchase_form': purchase_form,
+      'cart_products': cart_products,
+      'total_price': total_price
     }
     return render(request, 'app/cart.html', context)
 
+
+@login_required
+@require_POST
+def change_item_amount(request):
+    product_id = request.POST["product_id"]
+    cart_session = request.session['cart']
+    if product_id in cart_session:
+       if 'action_remove' in request.POST:
+           cart_session[product_id] -= 1
+       if 'action_add' in request.POST:
+           cart_session[product_id] += 1
+       if cart_session[product_id] <= 0:
+           del cart_session[product_id]
+    return redirect('app:cart')
+
+
+# 郵便番号検索の API を利用する関数 
+def get_address(zip_code):
+    REQUEST_URL = f'http://zipcloud.ibsnet.co.jp/api/search?zipcode={zip_code}'
+    address = ''
+    response = requests.get(REQUEST_URL)
+    response = json.loads(response.text)
+    result, api_status = response['results'], response['status']
+    if api_status == 200:
+       result = result[0]
+       address = result['address1'] + result['address2'] + result['address3']
+    return address
+
+@login_required
+def order_history(request):
+    user = request.user
+    sales = Sale.objects.filter(user=user).order_by('-created_at')
+    return render(request, 'app/order_history.html', {'sales': sales})    
